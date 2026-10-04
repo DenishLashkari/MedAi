@@ -79,6 +79,7 @@ export interface PatientProfile {
   date_of_birth: string | null;
   gender: string | null;
   blood_group: string | null;
+  abha_id?: string | null;
   address: string | null;
   emergency_contact: string | null;
   updated_at: string;
@@ -219,26 +220,52 @@ class PersistentStore {
     }
   }
 
-  findOrCreateUser(email: string, phone: string): User {
+  findOrCreateUser(
+    email: string,
+    phone: string,
+    patientDetails?: { full_name?: string; dob?: string; age?: string; gender?: string }
+  ): User {
     const normalizedEmail = email.trim().toLowerCase();
+    let user: User | undefined;
     const existingId = this.userByEmail.get(normalizedEmail);
     if (existingId && this.users.has(existingId)) {
-      const user = this.users.get(existingId)!;
+      user = this.users.get(existingId)!;
       user.phone = phone.trim();
-      this.scheduleSave();
-      return user;
+      if (patientDetails?.full_name) {
+        user.full_name = cleanName(patientDetails.full_name) || patientDetails.full_name;
+      }
+    } else {
+      const id = uuidv4();
+      user = {
+        id,
+        email: normalizedEmail,
+        phone: phone.trim(),
+        full_name: patientDetails?.full_name ? (cleanName(patientDetails.full_name) || patientDetails.full_name) : null,
+        created_at: new Date().toISOString(),
+        last_login: null,
+      };
+      this.users.set(id, user);
+      this.userByEmail.set(normalizedEmail, id);
     }
-    const id = uuidv4();
-    const user: User = {
-      id,
-      email: normalizedEmail,
-      phone: phone.trim(),
-      full_name: null,
-      created_at: new Date().toISOString(),
-      last_login: null,
-    };
-    this.users.set(id, user);
-    this.userByEmail.set(normalizedEmail, id);
+
+    if (patientDetails) {
+      const profileUpdate: Partial<PatientProfile> = {};
+      if (patientDetails.full_name) {
+        profileUpdate.full_name = cleanName(patientDetails.full_name) || patientDetails.full_name;
+      }
+      if (patientDetails.dob) {
+        profileUpdate.date_of_birth = patientDetails.dob;
+      }
+      if (patientDetails.age) {
+        const a = patientDetails.age.toString().trim();
+        profileUpdate.age = a.toLowerCase().includes('year') ? a : `${a} Years`;
+      }
+      if (patientDetails.gender) {
+        profileUpdate.gender = sanitizeGender(patientDetails.gender) || patientDetails.gender;
+      }
+      this.upsertProfile(user.id, profileUpdate);
+    }
+
     this.scheduleSave();
     return user;
   }
@@ -347,7 +374,17 @@ class PersistentStore {
         this.facts.delete(factId);
       }
     }
-    this.scheduleSave();
+    for (const [extId, ext] of this.extractions.entries()) {
+      if (ext.document_id === id) {
+        this.extractions.delete(extId);
+      }
+    }
+    for (const summary of this.summaries.values()) {
+      if (summary.user_id === userId && Array.isArray(summary.document_ids)) {
+        summary.document_ids = summary.document_ids.filter((did) => did !== id);
+      }
+    }
+    this.saveToDisk();
     return true;
   }
 
@@ -394,6 +431,7 @@ class PersistentStore {
         date_of_birth: validDob,
         gender: validGender,
         blood_group: profileData.blood_group || null,
+        abha_id: profileData.abha_id || null,
         address: profileData.address || null,
         emergency_contact: profileData.emergency_contact || null,
         updated_at: new Date().toISOString(),
@@ -406,6 +444,7 @@ class PersistentStore {
       if (validGender) profile.gender = validGender;
       else if (profile.gender === '21') profile.gender = null;
       if (profileData.blood_group) profile.blood_group = profileData.blood_group;
+      if (profileData.abha_id !== undefined) profile.abha_id = profileData.abha_id;
       if (profileData.address) profile.address = profileData.address;
       profile.updated_at = new Date().toISOString();
     }

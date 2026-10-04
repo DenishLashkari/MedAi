@@ -79,6 +79,12 @@ function showPage(pageId) {
   document.querySelectorAll(".sidebar-nav a").forEach((a) => {
     a.classList.toggle("active", a.dataset.page === pageId);
   });
+  document.querySelectorAll(".mobile-nav-item").forEach((a) => {
+    a.classList.toggle("active", a.dataset.page === pageId);
+  });
+
+  closeMobileSidebar();
+  window.scrollTo({ top: 0, behavior: "smooth" });
 
   // Load data for pages
   if (pageId === "dashboard") loadDashboard();
@@ -88,15 +94,94 @@ function showPage(pageId) {
   if (pageId === "qa") loadQAHistory();
 }
 
+function toggleMobileSidebar() {
+  const sidebar = document.getElementById("app-sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  if (sidebar) {
+    const isOpen = sidebar.classList.toggle("mobile-open");
+    if (backdrop) backdrop.classList.toggle("active", isOpen);
+  }
+}
+
+function closeMobileSidebar() {
+  const sidebar = document.getElementById("app-sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  if (sidebar) sidebar.classList.remove("mobile-open");
+  if (backdrop) backdrop.classList.remove("active");
+}
+
 // ============================================================
-// AUTH
+// AUTH & PATIENT PROFILE
 // ============================================================
 let _loginUserId = null;
 
+function calculateAgeFromDob(dobStr) {
+  if (!dobStr) return '';
+  const dob = new Date(dobStr);
+  if (isNaN(dob.getTime())) return '';
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const m = today.getMonth() - dob.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) {
+    age--;
+  }
+  return age >= 0 && age <= 130 ? age : '';
+}
+
+function onDobChanged() {
+  const dobEl = document.getElementById("login-dob");
+  const ageEl = document.getElementById("login-age");
+  if (dobEl && ageEl && dobEl.value) {
+    const calculated = calculateAgeFromDob(dobEl.value);
+    if (calculated !== '') {
+      ageEl.value = calculated;
+    }
+  }
+}
+
+function fillDemoPatient() {
+  const nameEl = document.getElementById("login-name");
+  const dobEl = document.getElementById("login-dob");
+  const ageEl = document.getElementById("login-age");
+  const emailEl = document.getElementById("login-email");
+  const phoneEl = document.getElementById("login-phone");
+  const genderEl = document.getElementById("login-gender");
+
+  if (nameEl) nameEl.value = "Eleanor Vance";
+  if (dobEl) dobEl.value = "1994-06-18";
+  if (ageEl) ageEl.value = "32";
+  if (emailEl) emailEl.value = "eleanor.vance@medicalportal.org";
+  if (phoneEl) phoneEl.value = "+1 (555) 349-8120";
+  if (genderEl) genderEl.value = "Female";
+
+  showToast("Demo patient details auto-filled.", "info", 2000);
+}
+
+function insertDevOtp() {
+  const devVal = document.getElementById("dev-otp-value")?.textContent?.trim();
+  if (devVal && devVal !== "——") {
+    const inputs = document.querySelectorAll(".otp-inputs input");
+    [...devVal].forEach((ch, i) => {
+      if (inputs[i]) inputs[i].value = ch;
+    });
+    if (inputs[inputs.length - 1]) inputs[inputs.length - 1].focus();
+    showToast("Verification code pasted.", "info", 1800);
+  }
+}
+
+function backToLogin() {
+  document.getElementById("screen-otp").style.display = "none";
+  document.getElementById("screen-login").style.display = "block";
+}
+
 async function doLogin(e) {
   e.preventDefault();
+  const name = document.getElementById("login-name")?.value.trim() || "";
+  const dob = document.getElementById("login-dob")?.value.trim() || "";
+  const age = document.getElementById("login-age")?.value.trim() || "";
   const email = document.getElementById("login-email").value.trim();
   const phone = document.getElementById("login-phone").value.trim();
+  const gender = document.getElementById("login-gender")?.value || "";
   const errEl = document.getElementById("login-error");
   const btn = document.getElementById("btn-continue");
 
@@ -105,13 +190,30 @@ async function doLogin(e) {
     errEl.style.display = "block";
     return;
   }
+  if (!name) {
+    errEl.textContent = "Please enter the patient's full name.";
+    errEl.style.display = "block";
+    return;
+  }
+  if (!dob || !age) {
+    errEl.textContent = "Please enter Date of Birth and Age.";
+    errEl.style.display = "block";
+    return;
+  }
 
   btn.disabled = true;
-  btn.innerHTML = '<span class="loader"></span> Sending OTP…';
+  btn.innerHTML = '<span class="loader"></span> Generating Security Code…';
   errEl.style.display = "none";
 
   try {
-    const r = await API.post("/auth/login", { email, phone });
+    const r = await API.post("/auth/login", {
+      email,
+      phone,
+      full_name: name,
+      dob,
+      age,
+      gender,
+    });
     const data = await r.json();
     if (!r.ok) {
       errEl.textContent = data.error || "Login failed.";
@@ -124,6 +226,11 @@ async function doLogin(e) {
     document.getElementById("screen-login").style.display = "none";
     document.getElementById("screen-otp").style.display = "block";
 
+    const targetDisplay = document.getElementById("otp-target-display");
+    if (targetDisplay) {
+      targetDisplay.textContent = `${name} (${phone})`;
+    }
+
     // Dev OTP display
     if (data.dev_otp) {
       const devBox = document.getElementById("dev-otp-box");
@@ -134,13 +241,14 @@ async function doLogin(e) {
       [...data.dev_otp].forEach((ch, i) => {
         if (inputs[i]) inputs[i].value = ch;
       });
+      if (inputs[0]) inputs[0].focus();
     }
   } catch (err) {
     errEl.textContent = "Network error. Is the server running?";
     errEl.style.display = "block";
   } finally {
     btn.disabled = false;
-    btn.innerHTML = "Continue";
+    btn.innerHTML = '<span>Continue to Secure Verification</span><span class="btn-arrow">→</span>';
   }
 }
 
@@ -155,13 +263,13 @@ async function doVerifyOtp(e) {
   const btn = document.getElementById("btn-verify");
 
   if (otp.length < 6) {
-    errEl.textContent = "Please enter the 6-digit OTP.";
+    errEl.textContent = "Please enter the complete 6-digit OTP code.";
     errEl.style.display = "block";
     return;
   }
 
   btn.disabled = true;
-  btn.innerHTML = '<span class="loader"></span> Verifying…';
+  btn.innerHTML = '<span class="loader"></span> Verifying Security Code…';
   errEl.style.display = "none";
 
   try {
@@ -185,7 +293,7 @@ async function doVerifyOtp(e) {
     errEl.style.display = "block";
   } finally {
     btn.disabled = false;
-    btn.innerHTML = "Verify OTP";
+    btn.innerHTML = '<span>Verify &amp; Open Medical Portal</span><span class="btn-arrow">→</span>';
   }
 }
 
@@ -196,47 +304,260 @@ function showApp() {
 
   // Set user display
   const email = API.user?.email || "";
-  const initials = (API.user?.full_name || email).substring(0, 2).toUpperCase();
+  const name = API.user?.full_name || "";
+  const initials = (name || email).substring(0, 2).toUpperCase();
   document.getElementById("user-initials").textContent = initials;
-  document.getElementById("user-email-display").textContent = email;
+  document.getElementById("user-email-display").textContent = name ? `${name} (${email})` : email;
 
-  loadEngineStatus();
+  // Immediately render initial patient profile card if patient details are stored
+  const profileCard = document.getElementById("patient-profile-card");
+  if (profileCard && (name || API.user?.age || API.user?.date_of_birth || API.user?.abha_id)) {
+    profileCard.style.display = "block";
+    if (name) document.getElementById("prof-name").textContent = name;
+    if (API.user?.age) document.getElementById("prof-age").textContent = API.user.age;
+    if (API.user?.gender) document.getElementById("prof-gender").textContent = API.user.gender;
+    if (API.user?.date_of_birth) document.getElementById("prof-dob").textContent = API.user.date_of_birth;
+
+    const abhaContainer = document.getElementById("prof-abha-container");
+    const abhaEl = document.getElementById("prof-abha");
+    if (abhaContainer && abhaEl) {
+      if (API.user?.abha_id && API.user.abha_id.trim()) {
+        abhaContainer.style.display = "block";
+        abhaEl.textContent = API.user.abha_id.trim();
+      } else {
+        abhaContainer.style.display = "none";
+      }
+    }
+  }
+
   showPage("dashboard");
 }
 
-async function loadEngineStatus() {
-  try {
-    const r = await API.get("/system/status");
-    if (!r.ok) return;
-    const data = await r.json();
-    const headerBadge = document.getElementById("api-engine-header-badge");
-    if (headerBadge) {
-      const userScheme = data.user_provided_api?.scheme ? ` + User API (${data.user_provided_api.scheme})` : '';
-      headerBadge.textContent = `⚡ ${data.configured_engine} (${data.model})${userScheme}`;
-      headerBadge.title = `Primary Engine: ${data.configured_engine} (${data.model})\nUser API: ${data.user_provided_api?.client_id || 'Active'} (${data.user_provided_api?.scheme})\nMode: ${data.active_mode}\n${data.description || ''}`;
-    }
-    const profBadge = document.getElementById("extraction-engine-badge");
-    if (profBadge) {
-      profBadge.textContent = `${data.configured_engine} + User API (${data.user_provided_api?.scheme || 'k2'})`;
-      profBadge.title = data.active_mode;
-    }
-    const userApiEl = document.getElementById("prof-user-api");
-    if (userApiEl && data.user_provided_api) {
-      userApiEl.textContent = `🟢 ${data.user_provided_api.scheme}:${data.user_provided_api.client_id.slice(0, 8)}... (Active)`;
-      userApiEl.title = `Full Client ID: ${data.user_provided_api.client_id}\nRaw Key: ${data.user_provided_api.raw_key}`;
-    }
-  } catch (e) {
-    // ignore
+async function doLogout() {
+  promptLogout();
+}
+
+function promptLogout() {
+  const modal = document.getElementById("logout-modal");
+  if (modal) modal.style.display = "flex";
+}
+
+function closeLogoutModal() {
+  const modal = document.getElementById("logout-modal");
+  if (modal) modal.style.display = "none";
+  const btn = document.getElementById("btn-confirm-logout");
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = "<span>Yes, Log Out</span>";
   }
 }
 
-async function doLogout() {
-  await API.post("/auth/logout", {});
+async function executeLogout() {
+  const btn = document.getElementById("btn-confirm-logout");
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loader"></span> Logging out…';
+  }
+  try {
+    await API.post("/auth/logout", {});
+  } catch (e) {
+    // ignore
+  }
   API.token = null;
   API.user = null;
   localStorage.removeItem("med_token");
   localStorage.removeItem("med_user");
   location.reload();
+}
+
+// ============================================================
+// ACCOUNT HOLDER DETAILS MODAL
+// ============================================================
+async function showAccountDetailsModal() {
+  const modal = document.getElementById("account-details-modal");
+  const bodyEl = document.getElementById("modal-account-body");
+  const avatarEl = document.getElementById("modal-account-avatar");
+  if (!modal || !bodyEl) return;
+
+  modal.style.display = "flex";
+
+  const user = API.user || {};
+  const prof = _cache.patientData?.profile || {};
+  const displayName = prof.full_name || user.full_name || user.email || "Patient";
+  const initials = displayName.substring(0, 2).toUpperCase();
+  if (avatarEl) avatarEl.textContent = initials;
+
+  // Immediate render from current active session state
+  renderAccountDetailsContent(user, prof);
+
+  // Background refresh to pull latest user profile, document counts, and facts
+  try {
+    const [meRes, patRes, docRes] = await Promise.all([
+      API.get("/auth/me").catch(() => null),
+      API.get("/summary/patient-data").catch(() => null),
+      API.get("/documents/").catch(() => null),
+    ]);
+
+    if (meRes && meRes.ok) {
+      const meData = await meRes.json();
+      if (meData.user) {
+        API.user = { ...API.user, ...meData.user };
+        localStorage.setItem("med_user", JSON.stringify(API.user));
+      }
+    }
+    if (patRes && patRes.ok) {
+      const patData = await patRes.json();
+      _cache.patientData = patData;
+    }
+    if (docRes && docRes.ok) {
+      const docData = await docRes.json();
+      _cache.docs = docData.documents || [];
+    }
+    renderAccountDetailsContent(API.user || user, _cache.patientData?.profile || prof);
+  } catch (err) {
+    console.error("Account refresh error:", err);
+  }
+}
+
+function closeAccountDetailsModal() {
+  const modal = document.getElementById("account-details-modal");
+  if (modal) modal.style.display = "none";
+}
+
+function copyAccountId(id) {
+  if (!id) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(id).then(() => {
+      showToast("Account ID copied to clipboard", "success");
+    }).catch(() => {
+      showToast(`Account ID: ${id}`, "info");
+    });
+  } else {
+    showToast(`Account ID: ${id}`, "info");
+  }
+}
+
+function renderAccountDetailsContent(user, prof) {
+  const bodyEl = document.getElementById("modal-account-body");
+  if (!bodyEl) return;
+
+  const fullName = prof.full_name || user.full_name || "Patient Account";
+  const email = user.email || "Not recorded";
+  const phone = user.phone || "Not recorded";
+  const age = user.age || prof.age || null;
+  const dob = user.date_of_birth || prof.date_of_birth || null;
+  const gender = user.gender || prof.gender || null;
+  const bloodGroup = prof.blood_group || user.blood_group || null;
+  const abhaId = prof.abha_id || user.abha_id || null;
+  const userId = user.id || "Active-Session";
+  const docCount = (_cache.docs?.length ?? user.documents_count ?? 0);
+  const labCount = (_cache.patientData?.lab_results?.length || 0);
+  const medCount = (_cache.patientData?.medications?.length || 0);
+  const initials = fullName.substring(0, 2).toUpperCase();
+
+  bodyEl.innerHTML = `
+    <!-- Hero Profile -->
+    <div class="account-hero-card">
+      <div class="account-hero-avatar">${escHtml(initials)}</div>
+      <div class="account-hero-info">
+        <div class="account-hero-name">
+          <span>${escHtml(fullName)}</span>
+          <span class="account-verified-tag">✓ Verified Patient</span>
+        </div>
+        <div class="account-hero-sub">
+          <span class="account-status-dot"></span>
+          <span>Active Authenticated Session</span>
+          <span>·</span>
+          <span>Encrypted Vault</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Storage / Records Overview Strip -->
+    <div class="account-records-strip">
+      <div class="account-stat-item">
+        <div class="account-stat-num">${docCount}</div>
+        <div class="account-stat-lbl">Records On File</div>
+      </div>
+      <div style="width:1px;height:28px;background:var(--border)"></div>
+      <div class="account-stat-item">
+        <div class="account-stat-num">${labCount}</div>
+        <div class="account-stat-lbl">Labs Tracked</div>
+      </div>
+      <div style="width:1px;height:28px;background:var(--border)"></div>
+      <div class="account-stat-item">
+        <div class="account-stat-num">${medCount}</div>
+        <div class="account-stat-lbl">Active Meds</div>
+      </div>
+    </div>
+
+    <!-- Account Details Grid -->
+    <div class="account-details-grid">
+      <div class="account-info-tile">
+        <span class="account-tile-label">✉️ Email Address</span>
+        <span class="account-tile-val">${escHtml(email)}</span>
+      </div>
+
+      <div class="account-info-tile">
+        <span class="account-tile-label">📱 Mobile Phone</span>
+        <span class="account-tile-val">${escHtml(phone)}</span>
+      </div>
+
+      <div class="account-info-tile">
+        <span class="account-tile-label">🎂 Age &amp; Birthdate</span>
+        <span class="account-tile-val">
+          ${age ? `${escHtml(age)} Yrs` : ''} ${dob ? `(${escHtml(dob)})` : (age ? '' : 'Not specified')}
+        </span>
+      </div>
+
+      <div class="account-info-tile">
+        <span class="account-tile-label">⚧ Gender &amp; Blood Group</span>
+        <span class="account-tile-val">
+          ${gender ? escHtml(gender) : 'Unspecified'} ${bloodGroup ? `· ${escHtml(bloodGroup)}` : ''}
+        </span>
+      </div>
+
+      <div class="account-info-tile span-full">
+        <span class="account-tile-label">🆔 ABHA Health ID</span>
+        <span class="account-tile-val">
+          ${abhaId ? `<code style="font-family:monospace;background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:4px;font-size:12.5px">${escHtml(abhaId)}</code>` : '<span style="color:var(--text-muted);font-weight:400;font-size:12.5px">Not linked to digital health card</span>'}
+        </span>
+      </div>
+
+      <div class="account-info-tile span-full" style="background:#f8fafc">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="account-tile-label">🔑 Patient Account ID</span>
+          <button type="button" class="btn-secondary" onclick="copyAccountId('${escHtml(userId)}')" style="font-size:11px;padding:2px 8px" title="Copy Account ID">
+            📋 Copy ID
+          </button>
+        </div>
+        <span class="account-tile-val" style="font-size:12px;font-family:monospace;color:var(--text-muted)">${escHtml(userId)}</span>
+      </div>
+    </div>
+
+    <!-- Security & Isolation Banner -->
+    <div class="account-security-banner">
+      <span style="font-size:18px">🛡️</span>
+      <div>
+        <strong style="color:#14532d">AES-256 Grade Vault Isolation Active</strong>
+        <div style="color:#15803d;font-size:11.5px;margin-top:2px">
+          All uploaded diagnostic documents, vitals, and physician notes are strictly isolated to your verified session.
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Actions -->
+    <div class="account-modal-actions">
+      <button type="button" class="btn-secondary" onclick="closeAccountDetailsModal();showPage('documents');" style="margin-right:auto">
+        📂 View Documents (${docCount})
+      </button>
+      <button type="button" class="btn-danger btn-sm" onclick="closeAccountDetailsModal();promptLogout();">
+        🚪 Log Out
+      </button>
+      <button type="button" class="btn-primary" onclick="closeAccountDetailsModal()">
+        Done
+      </button>
+    </div>`;
 }
 
 // ============================================================
@@ -284,12 +605,25 @@ function renderDashboardStats(docs, pat) {
   const profileCard = document.getElementById("patient-profile-card");
   if (profileCard) {
     const prof = pat.profile || {};
-    if (prof.full_name || prof.age || prof.gender || prof.date_of_birth) {
+    if (prof.full_name || prof.age || prof.gender || prof.date_of_birth || prof.abha_id) {
       profileCard.style.display = "block";
       document.getElementById("prof-name").textContent = prof.full_name || "Not recorded";
       document.getElementById("prof-age").textContent = prof.age || "Not recorded";
       document.getElementById("prof-gender").textContent = prof.gender || "Not recorded";
       document.getElementById("prof-dob").textContent = prof.date_of_birth || (prof.age ? "Not specified in report" : "Not recorded");
+
+      // ABHA Health ID: show only if provided in reports
+      const abhaContainer = document.getElementById("prof-abha-container");
+      const abhaEl = document.getElementById("prof-abha");
+      if (abhaContainer && abhaEl) {
+        if (prof.abha_id && prof.abha_id.trim()) {
+          abhaContainer.style.display = "block";
+          abhaEl.textContent = prof.abha_id.trim();
+        } else {
+          abhaContainer.style.display = "none";
+          abhaEl.textContent = "—";
+        }
+      }
     } else {
       profileCard.style.display = "none";
     }
@@ -323,16 +657,28 @@ function docHtml(doc) {
   }[doc.upload_status] || "";
   const size = doc.file_size_bytes ? `${(doc.file_size_bytes / 1024).toFixed(1)} KB` : "";
   const date = doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleDateString() : "";
+  const safeFilename = escHtml(doc.original_filename);
   return `
     <li class="doc-item" data-id="${doc.id}">
-      <span class="doc-icon">${docIcon(doc.file_type)}</span>
-      <div class="doc-info">
-        <div class="doc-name">${escHtml(doc.original_filename)}</div>
-        <div class="doc-meta">${size}${size && date ? " · " : ""}${date}</div>
+      <div class="doc-main-row">
+        <span class="doc-icon">${docIcon(doc.file_type)}</span>
+        <div class="doc-info">
+          <div class="doc-name" title="${safeFilename}">${safeFilename}</div>
+          <div class="doc-meta">${size}${size && date ? " · " : ""}${date}</div>
+        </div>
+        ${badge}
       </div>
-      ${badge}
-      <button class="btn-secondary" style="font-size:12px;padding:6px 12px;margin-right:6px" onclick="viewDocFacts('${doc.id}')">🔍 View Extracted Data</button>
-      <button class="btn-danger" onclick="deleteDocument('${doc.id}')">Delete</button>
+      <div class="doc-actions-row">
+        <button type="button" class="btn-primary btn-sm btn-doc-action" onclick="viewDocumentFile('${doc.id}', '${safeFilename}')">
+          <span>👁️ View File</span>
+        </button>
+        <button type="button" class="btn-secondary btn-sm btn-doc-action" onclick="viewDocFacts('${doc.id}')">
+          <span>🔍 Data</span>
+        </button>
+        <button type="button" class="btn-danger btn-delete-doc btn-sm btn-doc-action" data-doc-id="${doc.id}" data-doc-name="${safeFilename}">
+          <span>🗑️ Delete</span>
+        </button>
+      </div>
     </li>`;
 }
 
@@ -410,6 +756,7 @@ async function viewDocFacts(docId) {
           <div>🎂 <strong>Age:</strong> ${escHtml(prof.age || 'Not recorded')}</div>
           <div>⚧ <strong>Gender:</strong> ${escHtml(prof.gender || 'Not recorded')}</div>
           <div>📅 <strong>DOB:</strong> ${escHtml(prof.date_of_birth || 'Not recorded')}</div>
+          ${prof.abha_id ? `<div>🆔 <strong>ABHA ID:</strong> ${escHtml(prof.abha_id)}</div>` : ''}
         </div>
       </div>`;
 
@@ -462,17 +809,240 @@ function closeDocFactsModal() {
   document.getElementById("doc-facts-modal").style.display = "none";
 }
 
-async function deleteDocument(id) {
-  if (!confirm("Delete this document and all its extracted data?")) return;
-  const r = await API.delete(`/documents/${id}`);
-  if (r.ok) {
-    showToast("Document deleted.", "success");
-    loadDocuments();
-    loadDashboard();
-  } else {
-    showToast("Failed to delete document.", "error");
+// ============================================================
+// DOCUMENT FILE VIEWER
+// ============================================================
+async function viewDocumentFile(docId, filename) {
+  const modal = document.getElementById("doc-view-modal");
+  const titleEl = document.getElementById("modal-view-doc-title");
+  const metaEl = document.getElementById("modal-view-doc-meta");
+  const contentEl = document.getElementById("modal-doc-view-content");
+  const downloadBtn = document.getElementById("modal-view-download-btn");
+
+  if (!modal) return;
+  modal.style.display = "flex";
+  if (titleEl) titleEl.textContent = filename || "Document Preview";
+  if (metaEl) metaEl.textContent = "Loading file…";
+  if (contentEl) {
+    contentEl.innerHTML = `<div class="loading-overlay" style="height:100%"><span class="loader loader-dark"></span> Loading document preview…</div>`;
+  }
+
+  const viewUrl = `/api/documents/${docId}/view?token=${encodeURIComponent(API.token || '')}`;
+  if (downloadBtn) {
+    downloadBtn.href = viewUrl;
+    downloadBtn.download = filename || "document";
+  }
+
+  try {
+    const r = await API.get(`/documents/${docId}/content`);
+    const data = r.ok ? await r.json() : null;
+    const doc = data?.document || {};
+    const ext = (doc.file_type || filename?.split('.').pop() || '').toLowerCase();
+    const sizeStr = doc.file_size_bytes ? `${(doc.file_size_bytes / 1024).toFixed(1)} KB` : '';
+    if (metaEl) {
+      metaEl.textContent = `Type: ${ext.toUpperCase()}${sizeStr ? ` • Size: ${sizeStr}` : ''} • Uploaded: ${doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleString() : ''}`;
+    }
+
+    if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].includes(ext)) {
+      contentEl.innerHTML = `
+        <div style="flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:#0f172a">
+          <img src="${viewUrl}" alt="${escHtml(filename)}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,0.6)" />
+        </div>`;
+    } else if (ext === 'pdf') {
+      contentEl.innerHTML = `
+        <iframe src="${viewUrl}" style="width:100%;height:100%;border:none;flex:1" title="${escHtml(filename)}"></iframe>`;
+    } else {
+      const text = data?.text || 'No text content detected in this file.';
+      contentEl.innerHTML = `
+        <div style="flex:1;overflow:auto;padding:20px 24px;background:#ffffff">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+            <span style="font-weight:700;color:var(--primary);font-size:13px">📄 Document Text Content</span>
+            <span style="font-size:12px;color:var(--text-muted)">${text.length} characters</span>
+          </div>
+          <pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;line-height:1.65;color:#1e293b;background:#f8fafc;padding:16px;border-radius:8px;border:1px solid #e2e8f0;margin:0">${escHtml(text)}</pre>
+        </div>`;
+    }
+  } catch (err) {
+    if (contentEl) {
+      contentEl.innerHTML = `
+        <div style="padding:40px;text-align:center">
+          <p style="color:var(--error);margin-bottom:14px">Preview cannot be rendered in browser frame.</p>
+          <a href="${viewUrl}" target="_blank" download class="btn-primary" style="display:inline-block;text-decoration:none;padding:8px 18px">Download / Open Original File</a>
+        </div>`;
+    }
   }
 }
+
+function closeDocViewModal() {
+  const modal = document.getElementById("doc-view-modal");
+  if (modal) modal.style.display = "none";
+}
+
+// ============================================================
+// DOCUMENT DELETION (Accessible Permission Modal & Immediate Action)
+// ============================================================
+let _docToDeleteId = null;
+
+function ensureDocDeleteModal() {
+  let modal = document.getElementById("doc-delete-modal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "doc-delete-modal";
+    modal.className = "modal-overlay";
+    modal.style.display = "none";
+    modal.innerHTML = `
+      <div class="modal-dialog" style="max-width:480px">
+        <div class="modal-header" style="background:#fef2f2;border-bottom:1px solid #fecaca">
+          <h3 style="color:#b91c1c;display:flex;align-items:center;gap:8px">
+            <span>🗑️</span> Permission to Delete Record
+          </h3>
+          <button type="button" class="modal-close" onclick="closeDocDeleteModal()">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:22px">
+          <p style="font-size:14px;color:var(--text);margin-bottom:12px;line-height:1.5">
+            Do you give permission to permanently delete this record?
+          </p>
+          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
+            <span style="font-size:22px">📄</span>
+            <strong id="delete-doc-filename" style="color:var(--primary);font-size:14px;word-break:break-all">document</strong>
+          </div>
+          <div style="background:#fff1f2;border:1px solid #ffe4e6;border-radius:8px;padding:12px 14px;font-size:12.5px;color:#9f1239;margin-bottom:20px;line-height:1.5">
+            ⚠️ <strong>Notice:</strong> If you select <strong>Yes</strong>, this medical record and all its associated laboratory results, vitals, and diagnoses will be permanently erased.
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:10px">
+            <button type="button" class="btn-secondary" onclick="closeDocDeleteModal()">Cancel</button>
+            <button type="button" class="btn-danger" id="btn-confirm-delete" onclick="executeDocDelete()" style="background:#dc2626;color:#fff;border-color:#b91c1c;padding:9px 18px;font-weight:600">
+              <span>Yes, Delete Record</span>
+            </button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeDocDeleteModal();
+    });
+  }
+  return modal;
+}
+
+function handleDocDeleteKeyDown(e) {
+  if (e.key === "Escape") {
+    closeDocDeleteModal();
+  }
+}
+
+function promptDeleteDoc(id, filename) {
+  if (!id) return;
+  _docToDeleteId = id;
+  const modal = ensureDocDeleteModal();
+  const filenameEl = document.getElementById("delete-doc-filename");
+  if (filenameEl) {
+    filenameEl.textContent = filename || "this record";
+  }
+  modal.style.display = "flex";
+  window.addEventListener("keydown", handleDocDeleteKeyDown);
+}
+
+function closeDocDeleteModal() {
+  const modal = document.getElementById("doc-delete-modal");
+  if (modal) {
+    modal.style.display = "none";
+  }
+  _docToDeleteId = null;
+  window.removeEventListener("keydown", handleDocDeleteKeyDown);
+  const btn = document.getElementById("btn-confirm-delete");
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = "<span>Yes, Delete Record</span>";
+  }
+}
+
+async function executeDocDelete() {
+  if (!_docToDeleteId) return;
+  const btn = document.getElementById("btn-confirm-delete");
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loader"></span> Deleting record…';
+  }
+
+  const deletingId = _docToDeleteId;
+
+  try {
+    const r = await API.delete(`/documents/${deletingId}`);
+    if (r.ok) {
+      showToast("Record and extracted medical data deleted successfully.", "success");
+      // Instant optimistic removal from DOM
+      document.querySelectorAll(`.doc-item[data-id="${deletingId}"]`).forEach((el) => el.remove());
+
+      // Update cached docs list
+      if (_cache.docs) {
+        _cache.docs = _cache.docs.filter((d) => d.id !== deletingId);
+      }
+      _cache.patientData = null;
+      _cache.summariesByType = {};
+      closeDocDeleteModal();
+      loadDocuments(true);
+      loadDashboard(true);
+    } else {
+      const err = await r.json().catch(() => ({}));
+      showToast(err.error || "Failed to delete record.", "error");
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = "<span>Yes, Delete Record</span>";
+      }
+    }
+  } catch (err) {
+    showToast("Network error while deleting record.", "error");
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = "<span>Yes, Delete Record</span>";
+    }
+  }
+}
+
+async function deleteDocument(id, filename) {
+  promptDeleteDoc(id, filename);
+}
+
+// Global click delegation for all delete buttons
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".btn-delete-doc") || (e.target.matches("button.btn-danger") && e.target.closest(".doc-item") ? e.target : null);
+  if (btn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const docItem = btn.closest(".doc-item");
+    const docId = btn.getAttribute("data-doc-id") || docItem?.dataset?.id;
+    const docName = btn.getAttribute("data-doc-name") || docItem?.querySelector(".doc-name")?.textContent?.trim() || "this record";
+    if (docId) {
+      promptDeleteDoc(docId, docName);
+    }
+  }
+});
+
+// Explicitly bind to window for inline onclick handlers
+window.promptDeleteDoc = promptDeleteDoc;
+window.closeDocDeleteModal = closeDocDeleteModal;
+window.executeDocDelete = executeDocDelete;
+window.deleteDocument = deleteDocument;
+window.promptLogout = promptLogout;
+window.closeLogoutModal = closeLogoutModal;
+window.executeLogout = executeLogout;
+window.viewDocumentFile = viewDocumentFile;
+window.closeDocViewModal = closeDocViewModal;
+window.toggleMobileSidebar = toggleMobileSidebar;
+window.closeMobileSidebar = closeMobileSidebar;
+window.setPrimaryChip = setPrimaryChip;
+window.toggleSymptomCard = toggleSymptomCard;
+window.updateSeverityLabel = updateSeverityLabel;
+window.toggleHistoryDetails = toggleHistoryDetails;
+window.submitSymptomForm = submitSymptomForm;
+window.askPresetQuestion = askPresetQuestion;
+window.sendQuestion = sendQuestion;
+window.clearQAHistory = clearQAHistory;
+window.showAccountDetailsModal = showAccountDetailsModal;
+window.closeAccountDetailsModal = closeAccountDetailsModal;
+window.copyAccountId = copyAccountId;
 
 function setupUpload() {
   const zone = document.getElementById("upload-zone");
@@ -558,22 +1128,513 @@ async function handleFiles(files) {
 let _currentSummaryType = 'comprehensive';
 
 function renderMarkdown(md) {
+  return renderStructuredSummary(md);
+}
+
+function renderStructuredSummary(md) {
   if (!md) return '';
-  let html = escHtml(md);
-  // Headers
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-  // Bold & Italic
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-  // List items
-  html = html.replace(/^\s*[-•]\s+(.*$)/gim, '<li>$1</li>');
-  // Horizontal rule
-  html = html.replace(/^---$/gim, '<hr style="border:none;border-top:1px solid var(--border);margin:14px 0" />');
-  // Line breaks
-  html = html.replace(/\n\n/g, '<br/><br/>');
-  return `<div class="formatted-summary">${html}</div>`;
+
+  const rawLines = md.split('\n');
+  let title = '';
+  let metaLine = '';
+  let subLine = '';
+  let bodyStartIndex = 0;
+
+  for (let i = 0; i < Math.min(rawLines.length, 8); i++) {
+    const l = rawLines[i].trim();
+    if (l.startsWith('# ') && !title) {
+      title = l.replace(/^#\s+/, '');
+      bodyStartIndex = i + 1;
+    } else if (l.includes('**Patient:**') || l.includes('**Generated:**')) {
+      metaLine = l;
+      bodyStartIndex = i + 1;
+    } else if (l.startsWith('*') && l.endsWith('*') && !l.includes('###') && !l.includes('##')) {
+      subLine = l.replace(/^\*+|\*+$/g, '');
+      bodyStartIndex = i + 1;
+    } else if (l === '---') {
+      bodyStartIndex = i + 1;
+    }
+  }
+
+  const remainingText = rawLines.slice(bodyStartIndex).join('\n').trim();
+
+  // Split into sections by heading (## or ###)
+  const rawSections = remainingText.split(/(?=^#{2,3}\s+)/m);
+  const parsedSections = [];
+
+  for (const s of rawSections) {
+    const trimmed = s.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^#{2,3}\s+(.+)$/m);
+    if (match) {
+      const heading = match[1].trim();
+      const content = trimmed.substring(match[0].length).trim();
+      parsedSections.push({ heading, content });
+    } else {
+      parsedSections.push({ heading: 'Overview & Observations', content: trimmed });
+    }
+  }
+
+  // Count metrics for quick overview strip
+  let diagnosisCount = 0;
+  let abnormalLabCount = 0;
+  let totalLabCount = 0;
+  let vitalCount = 0;
+  let medCount = 0;
+
+  for (const sec of parsedSections) {
+    const lowerH = sec.heading.toLowerCase();
+    if (lowerH.includes('problem') || lowerH.includes('diagnos') || lowerH.includes('condition')) {
+      const conditionMatches = sec.content.match(/Identified Condition|Condition|Diagnosis/gi);
+      diagnosisCount += conditionMatches ? conditionMatches.length : 1;
+    }
+    if (lowerH.includes('lab') || lowerH.includes('biomarker') || lowerH.includes('finding')) {
+      const lines = sec.content.split('\n');
+      for (const l of lines) {
+        if (l.trim().startsWith('- ') || l.trim().startsWith('• ') || l.trim().startsWith('* ')) {
+          totalLabCount++;
+          if (/high|low|critical|elevated/i.test(l)) abnormalLabCount++;
+        }
+      }
+    }
+    if (lowerH.includes('vital')) {
+      const lines = sec.content.split('\n');
+      for (const l of lines) {
+        if (l.trim().startsWith('- ') || l.trim().startsWith('• ') || l.trim().startsWith('* ')) vitalCount++;
+      }
+    }
+    if (lowerH.includes('medication') || lowerH.includes('regimen') || lowerH.includes('prescription')) {
+      const lines = sec.content.split('\n');
+      for (const l of lines) {
+        if (l.trim().startsWith('- ') || l.trim().startsWith('• ') || l.trim().startsWith('* ')) medCount++;
+      }
+    }
+  }
+
+  let html = `<div class="summary-container-wrap">`;
+
+  // Quick Metrics Strip
+  if (totalLabCount > 0 || vitalCount > 0 || diagnosisCount > 0 || medCount > 0) {
+    html += `
+      <div class="summary-metrics-strip">
+        <div class="summary-metric-tile tile-problem">
+          <div class="tile-icon">🩺</div>
+          <div class="tile-body">
+            <span class="tile-label">Primary Findings</span>
+            <span class="tile-value">${diagnosisCount > 0 ? `${diagnosisCount} Identified` : 'Clinical Review'}</span>
+          </div>
+        </div>
+        <div class="summary-metric-tile tile-labs">
+          <div class="tile-icon">🧪</div>
+          <div class="tile-body">
+            <span class="tile-label">Lab Biomarkers</span>
+            <span class="tile-value">${totalLabCount > 0 ? `${totalLabCount} Tests (${abnormalLabCount} Flagged)` : 'Evaluated'}</span>
+          </div>
+        </div>
+        <div class="summary-metric-tile tile-vitals">
+          <div class="tile-icon">💓</div>
+          <div class="tile-body">
+            <span class="tile-label">Vitals Monitored</span>
+            <span class="tile-value">${vitalCount > 0 ? `${vitalCount} Recorded` : 'Baseline'}</span>
+          </div>
+        </div>
+        <div class="summary-metric-tile tile-meds">
+          <div class="tile-icon">💊</div>
+          <div class="tile-body">
+            <span class="tile-label">Active Regimen</span>
+            <span class="tile-value">${medCount > 0 ? `${medCount} Prescriptions` : 'None Listed'}</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // Render each section as an individual styled clinical box
+  for (const sec of parsedSections) {
+    const h = sec.heading;
+    const lowerH = h.toLowerCase();
+    const content = sec.content;
+
+    // 1. Patient Demographics Profile Box
+    if (lowerH.includes('patient') || lowerH.includes('demographic')) {
+      html += renderPatientDemoBox(h, content);
+    }
+    // 2. Clinical Problem & Diagnostic Assessment Box
+    else if (lowerH.includes('problem') || lowerH.includes('diagnos') || lowerH.includes('assessment') || lowerH.includes('condition')) {
+      html += renderClinicalProblemBox(h, content);
+    }
+    // 3. Laboratory Findings Box
+    else if (lowerH.includes('lab') || lowerH.includes('finding') || lowerH.includes('biomarker')) {
+      html += renderLabsBox(h, content);
+    }
+    // 4. Vital Signs Box
+    else if (lowerH.includes('vital')) {
+      html += renderVitalsBox(h, content);
+    }
+    // 5. Medications Box
+    else if (lowerH.includes('medication') || lowerH.includes('regimen') || lowerH.includes('prescription')) {
+      html += renderMedsBox(h, content);
+    }
+    // 6. Allergies Box
+    else if (lowerH.includes('allerg') || lowerH.includes('alert')) {
+      html += renderAllergiesBox(h, content);
+    }
+    // 7. General Section Box
+    else {
+      html += renderGeneralSectionBox(h, content);
+    }
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function parseKeyValueLine(line) {
+  if (!line) return null;
+  const trimmed = line.trim();
+  const cleaned = trimmed.replace(/^[-*•]\s*/, '').replace(/^⚠️\s*/, '');
+
+  // Case 1: **Key:** Value
+  let m = cleaned.match(/^\*\*([^*:]+):\*\*\s*(.*)/);
+  if (m) return { key: m[1].trim(), rest: m[2].trim() };
+
+  // Case 2: **Key**: Value
+  m = cleaned.match(/^\*\*([^*]+)\*\*:\s*(.*)/);
+  if (m) return { key: m[1].trim(), rest: m[2].trim() };
+
+  // Case 3: Key: Value
+  m = cleaned.match(/^([^:*]+):\s*(.*)/);
+  if (m) return { key: m[1].trim(), rest: m[2].trim() };
+
+  return null;
+}
+
+function renderPatientDemoBox(heading, content) {
+  const lines = content.split('\n');
+  const items = [];
+  for (const l of lines) {
+    const parsed = parseKeyValueLine(l);
+    if (parsed && parsed.rest && parsed.rest !== 'null') {
+      items.push({ label: parsed.key, val: parsed.rest });
+    }
+  }
+
+  let body = '';
+  if (items.length > 0) {
+    const labelIcons = {
+      'full name': '👤',
+      'name': '👤',
+      'patient name': '👤',
+      'age': '🎂',
+      'gender': '⚧',
+      'sex': '⚧',
+      'date of birth': '📅',
+      'dob': '📅',
+      'blood group': '🩸',
+      'blood type': '🩸',
+      'abha id': '🆔',
+      'health id': '🆔',
+      'address': '📍',
+      'contact': '📞',
+    };
+    body = `
+      <div class="summary-demographics-grid">
+        ${items.map(it => {
+          const icon = labelIcons[it.label.toLowerCase()] || '📋';
+          return `
+            <div class="summary-demographic-item">
+              <span class="demo-label">${icon} ${escHtml(it.label)}</span>
+              <span class="demo-val">${escHtml(it.val)}</span>
+            </div>`;
+        }).join('')}
+      </div>`;
+  } else {
+    body = `<p class="summary-plain-p">${formatGenericContent(content)}</p>`;
+  }
+
+  return `
+    <div class="summary-card-box">
+      <div class="summary-box-header">
+        <h3 class="summary-box-title">👤 Patient Demographic Profile</h3>
+        <span class="summary-box-badge">Verified On-File</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
+function renderClinicalProblemBox(heading, content) {
+  const lines = content.split('\n');
+  let intro = '';
+  const conditions = [];
+  const indicators = [];
+
+  for (const l of lines) {
+    const trimmed = l.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('- **Identified Condition:**') || trimmed.startsWith('• **Identified Condition:**') || trimmed.startsWith('**Identified Condition:**')) {
+      conditions.push(trimmed.replace(/^[-*•]?\s*\*\*Identified Condition:\*\*\s*/i, ''));
+    } else if (trimmed.startsWith('• ') || trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      indicators.push(trimmed.replace(/^[-*•]\s*/, ''));
+    } else if (!intro && !trimmed.startsWith('**') && !trimmed.startsWith('#')) {
+      intro = trimmed;
+    }
+  }
+
+  return `
+    <div class="summary-card-box" style="border-left:5px solid #0284c7">
+      <div class="summary-box-header">
+        <h3 class="summary-box-title">🩺 Clinical Problem &amp; Diagnostic Assessment</h3>
+        <span class="summary-box-badge" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">Clinical Evaluation</span>
+      </div>
+      <div class="summary-problem-callout">
+        <div class="problem-banner-eyebrow">
+          <span>🚨</span> Clinical Findings Identified in Records:
+        </div>
+        <div class="problem-banner-title">
+          ${conditions.length ? conditions.map(c => `<div>🩺 <strong>${escHtml(c)}</strong></div>`).join('') : (intro ? escHtml(intro) : 'Evaluation grounded in uploaded diagnostic files.')}
+        </div>
+        ${intro && conditions.length ? `<p style="font-size:13px;color:#0369a1;margin-bottom:10px">${escHtml(intro)}</p>` : ''}
+        ${indicators.length ? `
+          <div class="problem-indicators-list">
+            ${indicators.map(ind => {
+              const flagMatch = ind.match(/Flagged\s+([A-Za-z/]+)/i) || ind.match(/\[([A-Za-z/]+)\]/i);
+              const flag = flagMatch ? (flagMatch[1] || flagMatch[2]) : '';
+              const flagClass = flag.toLowerCase().includes('high') ? 'flag-High' : flag.toLowerCase().includes('low') ? 'flag-Low' : 'flag-Normal';
+              return `
+                <div class="problem-indicator-item">
+                  <span>${escHtml(ind)}</span>
+                  ${flag ? `<span class="flag-badge ${flagClass}">${escHtml(flag)}</span>` : ''}
+                </div>`;
+            }).join('')}
+          </div>` : ''}
+      </div>
+    </div>`;
+}
+
+function renderLabsBox(heading, content) {
+  const lines = content.split('\n');
+  const labs = [];
+
+  for (const l of lines) {
+    const parsed = parseKeyValueLine(l);
+    if (parsed) {
+      const name = parsed.key;
+      const rest = parsed.rest;
+
+      const flagMatch = rest.match(/\[([A-Za-z/]+)\]|\(Flagged\s+([A-Za-z/]+)/i);
+      const flag = flagMatch ? (flagMatch[1] || flagMatch[2]) : '';
+
+      const refMatch = rest.match(/\*?\(Ref:?\s*([^\)]+)\)\*?|\(ref:?\s*([^\)]+)\)/i);
+      const ref = refMatch ? (refMatch[1] || refMatch[2]) : '';
+
+      let valUnit = rest.replace(/\[.*?\]|\(.*?\)/g, '').replace(/\*+/g, '').trim();
+
+      labs.push({ name, valUnit, flag, ref });
+    }
+  }
+
+  let body = '';
+  if (labs.length > 0) {
+    body = `
+      <div class="summary-labs-grid">
+        ${labs.map(lab => {
+          const isHigh = /high|elevated/i.test(lab.flag);
+          const isLow = /low/i.test(lab.flag);
+          const flagClass = isHigh ? 'flagged-high' : isLow ? 'flagged-low' : 'flagged-normal';
+          const badgeClass = isHigh ? 'flag-High' : isLow ? 'flag-Low' : 'flag-Normal';
+
+          return `
+            <div class="summary-lab-card ${flagClass}">
+              <div class="lab-card-top">
+                <span class="lab-card-name">${escHtml(lab.name)}</span>
+                ${lab.flag ? `<span class="flag-badge ${badgeClass}">${escHtml(lab.flag)}</span>` : ''}
+              </div>
+              <div class="lab-card-val-row">
+                <span class="lab-card-val">${escHtml(lab.valUnit || '—')}</span>
+              </div>
+              ${lab.ref ? `<div class="lab-card-ref">Ref: ${escHtml(lab.ref)}</div>` : ''}
+            </div>`;
+        }).join('')}
+      </div>`;
+  } else {
+    body = `<p class="summary-plain-p">${formatGenericContent(content)}</p>`;
+  }
+
+  return `
+    <div class="summary-card-box">
+      <div class="summary-box-header">
+        <h3 class="summary-box-title">🧪 Laboratory Diagnostics &amp; Biomarkers</h3>
+        <span class="summary-box-badge">${labs.length ? `${labs.length} Tests Analyzed` : 'Diagnostics'}</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
+function renderVitalsBox(heading, content) {
+  const lines = content.split('\n');
+  const vitals = [];
+
+  for (const l of lines) {
+    const parsed = parseKeyValueLine(l);
+    if (parsed) {
+      const name = parsed.key;
+      const rest = parsed.rest;
+      const flagMatch = rest.match(/\[([A-Za-z/]+)\]/i);
+      const flag = flagMatch ? flagMatch[1] : '';
+      const val = rest.replace(/\[.*?\]/g, '').replace(/\*+/g, '').trim();
+      vitals.push({ name, val, flag });
+    }
+  }
+
+  let body = '';
+  if (vitals.length > 0) {
+    body = `
+      <div class="summary-vitals-grid">
+        ${vitals.map(v => {
+          const isHigh = /high|elevated/i.test(v.flag);
+          const flagClass = isHigh ? 'flag-High' : 'flag-Normal';
+          return `
+            <div class="summary-vital-card">
+              <span class="vital-card-name">${escHtml(v.name)}</span>
+              <div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px">
+                <span class="vital-card-val">${escHtml(v.val)}</span>
+                ${v.flag ? `<span class="flag-badge ${flagClass}">${escHtml(v.flag)}</span>` : ''}
+              </div>
+            </div>`;
+        }).join('')}
+      </div>`;
+  } else {
+    body = `<p class="summary-plain-p">${formatGenericContent(content)}</p>`;
+  }
+
+  return `
+    <div class="summary-card-box">
+      <div class="summary-box-header">
+        <h3 class="summary-box-title">💓 Recorded Vital Signs</h3>
+        <span class="summary-box-badge">${vitals.length ? `${vitals.length} Vitals` : 'Vitals'}</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
+function renderMedsBox(heading, content) {
+  const lines = content.split('\n');
+  const meds = [];
+
+  for (const l of lines) {
+    const parsed = parseKeyValueLine(l);
+    if (parsed) {
+      meds.push({ name: parsed.key, details: parsed.rest });
+    }
+  }
+
+  let body = '';
+  if (meds.length > 0) {
+    body = `
+      <div class="summary-meds-grid">
+        ${meds.map(m => `
+          <div class="summary-med-card">
+            <span class="summary-med-icon">💊</span>
+            <div class="summary-med-info">
+              <span class="summary-med-name">${escHtml(m.name)}</span>
+              <span class="summary-med-dose">${escHtml(m.details || 'As prescribed')}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>`;
+  } else {
+    body = `<p class="summary-plain-p">${formatGenericContent(content)}</p>`;
+  }
+
+  return `
+    <div class="summary-card-box">
+      <div class="summary-box-header">
+        <h3 class="summary-box-title">💊 Current Medications &amp; Regimen</h3>
+        <span class="summary-box-badge">${meds.length ? `${meds.length} Prescriptions` : 'Pharmacotherapy'}</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
+function renderAllergiesBox(heading, content) {
+  const lines = content.split('\n');
+  const allergies = [];
+
+  for (const l of lines) {
+    const parsed = parseKeyValueLine(l);
+    if (parsed) {
+      allergies.push({ allergen: parsed.key, reaction: parsed.rest });
+    }
+  }
+
+  let body = '';
+  if (allergies.length > 0) {
+    body = `
+      <div class="summary-allergies-grid">
+        ${allergies.map(a => `
+          <div class="summary-allergy-card">
+            <span style="font-size:22px;flex-shrink:0">⚠️</span>
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <strong style="color:#9a3412;font-size:13.5px">${escHtml(a.allergen)}</strong>
+              <span style="font-size:12px;color:#c2410c">${escHtml(a.reaction || 'Adverse hypersensitivity alert')}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>`;
+  } else {
+    body = `<p class="summary-plain-p">${formatGenericContent(content)}</p>`;
+  }
+
+  return `
+    <div class="summary-card-box">
+      <div class="summary-box-header">
+        <h3 class="summary-box-title">⚠️ Allergies &amp; Safety Alerts</h3>
+        <span class="summary-box-badge" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa">Safety Precautions</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
+function renderGeneralSectionBox(heading, content) {
+  const cleanHeading = heading.replace(/^#{1,3}\s*/, '');
+  return `
+    <div class="summary-card-box">
+      <div class="summary-box-header">
+        <h3 class="summary-box-title">${escHtml(cleanHeading)}</h3>
+        <span class="summary-box-badge">Clinical Synthesis</span>
+      </div>
+      <div style="font-size:13.5px;line-height:1.65;color:var(--text)">
+        ${formatGenericContent(content)}
+      </div>
+    </div>`;
+}
+
+function formatGenericContent(text) {
+  if (!text) return '';
+  let escaped = escHtml(text);
+  escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  escaped = escaped.replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+  const lines = escaped.split('\n');
+  let inList = false;
+  const processed = [];
+  for (const l of lines) {
+    const t = l.trim();
+    if (t.startsWith('- ') || t.startsWith('• ') || t.startsWith('* ')) {
+      if (!inList) {
+        processed.push('<ul class="summary-action-list">');
+        inList = true;
+      }
+      processed.push(`<li>${t.substring(2)}</li>`);
+    } else {
+      if (inList) {
+        processed.push('</ul>');
+        inList = false;
+      }
+      if (t) processed.push(`<p class="summary-plain-p">${t}</p>`);
+    }
+  }
+  if (inList) processed.push('</ul>');
+  return processed.join('\n');
 }
 
 function selectSummaryType(type) {
@@ -785,21 +1846,39 @@ function renderPatientTables(data) {
   // Diagnoses
   const diagEl = document.getElementById("diagnoses-list");
   if (data.diagnoses?.length) {
-    diagEl.innerHTML = data.diagnoses.map(d =>
-      `<div class="missing-tag" style="background:#f0fdf4;border-color:#86efac;color:#166534;">🩺 ${escHtml(d.field_name || "")}</div>`
-    ).join("");
+    diagEl.innerHTML = `
+      <div class="diagnoses-cards-grid">
+        ${data.diagnoses.map(d => `
+          <div class="diag-card">
+            <span class="diag-card-icon">🩺</span>
+            <div class="diag-card-body">
+              <div class="diag-card-title">${escHtml(d.field_name || d.name || "Diagnosis")}</div>
+              <div class="diag-card-sub">${escHtml(d.report_date ? `Reported: ${d.report_date}` : 'Confirmed on medical record')}</div>
+            </div>
+          </div>
+        `).join("")}
+      </div>`;
   } else {
-    diagEl.innerHTML = `<span style="color:var(--text-muted);font-size:13px">No diagnoses recorded.</span>`;
+    diagEl.innerHTML = `<span style="color:var(--text-muted);font-size:13px">No recorded diagnoses found in uploaded documents.</span>`;
   }
 
   // Allergies
   const allergyEl = document.getElementById("allergies-list");
   if (data.allergies?.length) {
-    allergyEl.innerHTML = data.allergies.map(a =>
-      `<span class="missing-tag" style="background:#fff7ed;border-color:#fdba74;color:#c2410c;">⚠️ ${escHtml(a.field_name || "")}</span>`
-    ).join("");
+    allergyEl.innerHTML = `
+      <div class="allergies-cards-grid">
+        ${data.allergies.map(a => `
+          <div class="allergy-card-item">
+            <span class="allergy-card-icon">⚠️</span>
+            <div class="allergy-card-body">
+              <div class="allergy-card-title">${escHtml(a.field_name || a.substance || "Allergy")}</div>
+              <div class="allergy-card-sub">${escHtml(a.field_value || a.reaction || 'Known hypersensitivity / allergy')}</div>
+            </div>
+          </div>
+        `).join("")}
+      </div>`;
   } else {
-    allergyEl.innerHTML = `<span style="color:var(--text-muted);font-size:13px">No allergies recorded.</span>`;
+    allergyEl.innerHTML = `<span style="color:var(--text-muted);font-size:13px">No allergies recorded in uploaded documents.</span>`;
   }
 }
 
@@ -849,8 +1928,8 @@ async function downloadPDF() {
 // ============================================================
 
 function setPrimaryChip(btn, text) {
-  document.querySelectorAll(".chip-btn").forEach(b => b.classList.remove("active"));
-  btn.classList.add("active");
+  document.querySelectorAll(".symptom-chip-btn").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
   const input = document.getElementById("sym-primary");
   if (input) {
     input.value = text;
@@ -858,28 +1937,36 @@ function setPrimaryChip(btn, text) {
   }
 }
 
+function toggleSymptomCard(cb) {
+  const card = cb.closest(".symptom-checkbox-card");
+  if (card) {
+    card.classList.toggle("active", cb.checked);
+  }
+}
+
 function updateSeverityLabel(val) {
   const label = document.getElementById("severity-label");
+  if (!label) return;
   const num = parseInt(val, 10);
-  let text = "Moderate";
-  let color = "var(--accent)";
+  let text = `${num} · Moderate`;
+  let cls = "severity-moderate";
 
   if (num <= 3) {
-    text = `${num} - Mild`;
-    color = "var(--success)";
+    text = `${num} · Mild (Tolerable)`;
+    cls = "severity-mild";
   } else if (num <= 6) {
-    text = `${num} - Moderate`;
-    color = "var(--warning)";
+    text = `${num} · Moderate (Noticeable)`;
+    cls = "severity-moderate";
   } else if (num <= 8) {
-    text = `${num} - Severe`;
-    color = "#dc2626";
+    text = `${num} · Severe (Disruptive)`;
+    cls = "severity-severe";
   } else {
-    text = `${num} - Critical / Emergency`;
-    color = "#991b1b";
+    text = `${num} · Critical / Emergency`;
+    cls = "severity-critical";
   }
 
   label.textContent = text;
-  label.style.color = color;
+  label.className = `severity-badge-pill ${cls}`;
 }
 
 async function submitSymptomForm(e) {
@@ -926,7 +2013,7 @@ async function submitSymptomForm(e) {
     showToast("Network error while evaluating symptoms.", "error");
   } finally {
     btn.disabled = false;
-    btn.innerHTML = "🩺 Analyze Symptoms with AI";
+    btn.innerHTML = "<span>🩺 Analyze Symptoms with Medical AI</span><span class='btn-arrow'>→</span>";
   }
 }
 
@@ -992,34 +2079,183 @@ function renderSymptomsHistoryList(reports) {
   if (!listEl) return;
 
   if (!reports || reports.length === 0) {
-    listEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">No previous assessments yet. Fill out the form above to check symptoms.</p>`;
+    listEl.innerHTML = `<div class="empty-state" style="padding:24px"><div class="empty-icon">🩺</div><p>No previous assessments on record yet. Fill out the form above to check symptoms.</p></div>`;
     return;
   }
 
   listEl.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:12px">
-      ${reports.map(rep => {
-        const date = new Date(rep.created_at).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      ${reports.map((rep, idx) => {
+        const date = new Date(rep.created_at).toLocaleDateString([], {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const assessment = rep.assessment || {};
+        const urgency = assessment.urgency || "Moderate";
+        const urgencyClass = urgency.toLowerCase().includes("mild")
+          ? "badge-success"
+          : urgency.toLowerCase().includes("moderate")
+          ? "badge-warning"
+          : "badge-danger";
+        const sevNum = parseInt(rep.severity, 10);
+        const sevClass = sevNum <= 3 ? "severity-mild" : sevNum <= 6 ? "severity-moderate" : "severity-severe";
+
         return `
-          <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:14px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap">
-              <strong style="color:var(--primary);font-size:15px">🩺 ${escHtml(rep.primary_symptom)}</strong>
-              <span style="font-size:12px;color:var(--text-muted)">${date}</span>
+          <div class="symptom-history-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow-sm)">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+              <div>
+                <strong style="color:var(--primary);font-size:15px;display:flex;align-items:center;gap:6px">
+                  <span>🩺</span> ${escHtml(rep.primary_symptom)}
+                </strong>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:2px">
+                  Evaluated: ${date} · Duration: <strong>${escHtml(rep.duration)}</strong>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <span class="severity-badge-pill ${sevClass}" style="font-size:11px">Pain ${rep.severity}/10</span>
+                <span class="badge-pill ${urgencyClass}" style="font-size:11px">${escHtml(urgency)}</span>
+              </div>
             </div>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
-              Duration: <strong>${escHtml(rep.duration)}</strong> &nbsp;|&nbsp; Severity: <strong>${rep.severity}/10</strong>
+
+            ${assessment.probable_problem ? `
+              <div style="background:var(--surface-2);border-left:3px solid var(--accent);padding:8px 12px;border-radius:4px;font-size:13px;margin:8px 0">
+                <strong>Probable Issue:</strong> ${escHtml(assessment.probable_problem)}
+              </div>` : ''}
+
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+              <span style="font-size:11.5px;color:var(--text-muted)">
+                ${(rep.associated_symptoms || []).length ? `Symptoms: ${(rep.associated_symptoms || []).slice(0, 3).map(escHtml).join(", ")}${rep.associated_symptoms.length > 3 ? ` +${rep.associated_symptoms.length - 3} more` : ''}` : 'No associated symptoms'}
+              </span>
+              <button type="button" class="btn-secondary btn-sm" onclick="toggleHistoryDetails('hist-detail-${idx}')" style="font-size:11.5px;padding:3px 10px">
+                <span>Details ▾</span>
+              </button>
             </div>
-            <div style="font-size:13px;line-height:1.5;color:var(--text)">
-              ${escHtml(rep.assessment?.probable_problem || "")}
+
+            <div id="hist-detail-${idx}" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:13px">
+              <p style="margin-bottom:8px;line-height:1.5"><strong>Explanation:</strong> ${escHtml(assessment.explanation || 'No detailed explanation recorded.')}</p>
+              ${(assessment.recommended_actions || []).length ? `
+                <div><strong>Recommended Next Steps:</strong>
+                  <ul style="padding-left:18px;margin-top:4px;color:#14532d">
+                    ${assessment.recommended_actions.map(a => `<li>${escHtml(a)}</li>`).join("")}
+                  </ul>
+                </div>` : ''}
             </div>
           </div>`;
       }).join("")}
     </div>`;
 }
 
+function toggleHistoryDetails(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
 // ============================================================
-// Q&A CHATBOT
+// Q&A CHATBOT WITH DOCTOR & PATIENT LOGOS & ENHANCED BOX LAYOUT
 // ============================================================
+
+// Doctor Logo (Physician badge with medical cross, stethoscope & white coat)
+const DOCTOR_LOGO_SVG = `
+<svg class="role-logo-svg doctor-logo" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Doctor AI">
+  <circle cx="18" cy="18" r="17" fill="#0284c7" stroke="#38bdf8" stroke-width="1"/>
+  <!-- Head -->
+  <circle cx="18" cy="11" r="4.5" fill="#ffffff"/>
+  <!-- Doctor Hair / Surgical Cap -->
+  <path d="M13.5 10c.8-2 2.5-3.2 4.5-3.2s3.7 1.2 4.5 3.2" stroke="#0369a1" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- White Doctor Coat Body -->
+  <path d="M9.5 28.5c0-4.5 3.8-7.5 8.5-7.5s8.5 3 8.5 7.5v1.5h-17v-1.5z" fill="#f8fafc"/>
+  <!-- Inner shirt / V-neck -->
+  <path d="M16 21l2 3.5 2-3.5" fill="#0284c7"/>
+  <!-- Stethoscope around neck with chest bell -->
+  <path d="M14.2 16v4.5a3.8 3.8 0 0 0 7.6 0V16" stroke="#0f172a" stroke-width="1.6" stroke-linecap="round"/>
+  <circle cx="18" cy="23.2" r="1.3" fill="#0f172a"/>
+  <!-- Red Cross Badge on Doctor's Left Pocket -->
+  <rect x="22.5" y="21" width="5" height="5" rx="1" fill="#ef4444"/>
+  <path d="M25 22.2v2.6M23.7 23.5h2.6" stroke="#ffffff" stroke-width="1" stroke-linecap="round"/>
+</svg>`;
+
+// Patient Logo (Patient profile avatar with vital heartbeat / ECG emblem)
+const PATIENT_LOGO_SVG = `
+<svg class="role-logo-svg patient-logo" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Patient">
+  <circle cx="18" cy="18" r="17" fill="#0e2439" stroke="#93c5fd" stroke-width="1"/>
+  <!-- Head -->
+  <circle cx="18" cy="11" r="4.5" fill="#ffffff"/>
+  <!-- Hair -->
+  <path d="M13.5 10.5c.6-2.2 2.3-3.5 4.5-3.5s3.9 1.3 4.5 3.5" stroke="#38bdf8" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- Patient attire (comfortable soft blue clinic attire) -->
+  <path d="M9.5 28.5c0-4.5 3.8-7.5 8.5-7.5s8.5 3 8.5 7.5v1.5h-17v-1.5z" fill="#93c5fd"/>
+  <!-- Collar -->
+  <path d="M15.5 21l2.5 3.2 2.5-3.2" stroke="#1e3a8a" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Vital ECG / Heart Monitor Badge -->
+  <circle cx="23.5" cy="22" r="3.2" fill="#10b981"/>
+  <path d="M21.5 22h1.1l.6-1.3.8 2.4.6-1.1h1.1" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+
+function formatChatText(text) {
+  if (!text) return "";
+  let formatted = escHtml(text);
+  // Bold markdown
+  formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+
+  // Format bullet lines and paragraphs cleanly
+  const lines = formatted.split("\n");
+  let inList = false;
+  const processed = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (inList) {
+        processed.push("</ul>");
+        inList = false;
+      }
+      continue;
+    }
+    if (trimmed.startsWith("- ") || trimmed.startsWith("• ") || trimmed.startsWith("* ")) {
+      if (!inList) {
+        processed.push('<ul class="chat-bullet-list">');
+        inList = true;
+      }
+      processed.push(`<li>${trimmed.substring(2)}</li>`);
+    } else {
+      if (inList) {
+        processed.push("</ul>");
+        inList = false;
+      }
+      processed.push(`<p>${trimmed}</p>`);
+    }
+  }
+  if (inList) processed.push("</ul>");
+  return processed.join("");
+}
+
+function renderChatEmptyState() {
+  return `
+    <div class="empty-state chat-empty-state">
+      <div class="chat-doctor-welcome-avatar">
+        ${DOCTOR_LOGO_SVG}
+      </div>
+      <h3>Consult with Doctor AI</h3>
+      <p>Ask clinical questions about your uploaded medical records, lab trends, diagnoses, or prescriptions. Doctor AI evaluates strictly from your on-file documents.</p>
+      <div class="chat-suggestion-chips">
+        <button type="button" class="chat-chip-btn" onclick="askPresetQuestion('Summarize my uploaded medical records')">📋 Summarize my records</button>
+        <button type="button" class="chat-chip-btn" onclick="askPresetQuestion('Are any of my blood test or lab results abnormal?')">🧪 Abnormal lab values?</button>
+        <button type="button" class="chat-chip-btn" onclick="askPresetQuestion('What medications are listed in my reports?')">💊 Review medications</button>
+        <button type="button" class="chat-chip-btn" onclick="askPresetQuestion('What clinical diagnoses or findings were noted?')">🩺 Recorded diagnoses?</button>
+      </div>
+    </div>`;
+}
+
+function askPresetQuestion(text) {
+  const inputEl = document.getElementById("qa-input");
+  if (inputEl) {
+    inputEl.value = text;
+    sendQuestion();
+  }
+}
+
 async function loadQAHistory() {
   try {
     const r = await API.get("/qa/history");
@@ -1027,13 +2263,8 @@ async function loadQAHistory() {
     const { history } = await r.json();
     const chatEl = document.getElementById("chat-messages");
 
-    if (history.length === 0) {
-      chatEl.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">💬</div>
-          <h3>Ask anything about your medical records</h3>
-          <p>Type your question below. The AI will answer using only your uploaded documents.</p>
-        </div>`;
+    if (!history || history.length === 0) {
+      chatEl.innerHTML = renderChatEmptyState();
       return;
     }
 
@@ -1051,16 +2282,34 @@ async function loadQAHistory() {
 
 function chatBubbleHtml(role, text, timestamp) {
   const isUser = role === "user";
-  const avatar = isUser
-    ? `<div class="bubble-avatar user-av">👤</div>`
-    : `<div class="bubble-avatar ai-av">🤖</div>`;
+  const avatarSvg = isUser ? PATIENT_LOGO_SVG : DOCTOR_LOGO_SVG;
+  const roleName = isUser ? "Patient" : "Doctor AI (Medical Specialist)";
+  const badgeClass = isUser ? "patient-badge" : "doctor-badge";
+  const badgeLabel = isUser ? "You" : "Verified Records";
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const formattedBody = formatChatText(text);
+
   return `
     <div class="chat-bubble ${isUser ? "user" : "ai"}">
-      ${avatar}
-      <div>
-        <div class="bubble-body">${escHtml(text)}</div>
-        ${time ? `<div class="bubble-time">${time}</div>` : ""}
+      <div class="bubble-avatar ${isUser ? "user-av" : "ai-av"}" title="${roleName}">
+        ${avatarSvg}
+      </div>
+      <div class="bubble-content-wrap">
+        <div class="bubble-sender-row">
+          <span class="bubble-sender-name">
+            ${escHtml(roleName)}
+            <span class="sender-badge ${badgeClass}">${badgeLabel}</span>
+          </span>
+          ${time ? `<span class="bubble-time">${time}</span>` : ""}
+        </div>
+        <div class="bubble-body">
+          ${formattedBody}
+        </div>
+        ${!isUser ? `
+          <div class="bubble-doctor-footer">
+            <span class="doc-badge-pill">🩺 Clinical AI</span>
+            <span class="doc-ref-text">Grounded in your uploaded medical documents</span>
+          </div>` : ""}
       </div>
     </div>`;
 }
@@ -1087,14 +2336,27 @@ async function sendQuestion(e) {
 
   appendChatBubble("user", question);
 
-  // Thinking indicator
+  // Thinking indicator with doctor logo and upgraded box layout
   const chatEl = document.getElementById("chat-messages");
   const thinkingId = `thinking-${Date.now()}`;
   chatEl.insertAdjacentHTML("beforeend", `
-    <div class="chat-bubble ai" id="${thinkingId}">
-      <div class="bubble-avatar ai-av">🤖</div>
-      <div class="bubble-body" style="color:var(--text-muted)">
-        <span class="loader loader-dark"></span> Thinking…
+    <div class="chat-bubble ai thinking" id="${thinkingId}">
+      <div class="bubble-avatar ai-av" title="Doctor AI">
+        ${DOCTOR_LOGO_SVG}
+      </div>
+      <div class="bubble-content-wrap">
+        <div class="bubble-sender-row">
+          <span class="bubble-sender-name">
+            Doctor AI (Medical Specialist)
+            <span class="sender-badge doctor-badge">Consulting Records</span>
+          </span>
+        </div>
+        <div class="bubble-body thinking-body">
+          <div class="thinking-spinner-row">
+            <span class="loader loader-dark"></span>
+            <span>Doctor AI is evaluating your medical files & formulating answer…</span>
+          </div>
+        </div>
       </div>
     </div>`);
   chatEl.scrollTop = chatEl.scrollHeight;
@@ -1119,7 +2381,6 @@ async function sendQuestion(e) {
 }
 
 async function clearQAHistory() {
-  if (!confirm("Clear all conversation history?")) return;
   const r = await API.delete("/qa/history");
   if (r.ok) {
     showToast("Conversation cleared.", "success");
@@ -1164,14 +2425,52 @@ document.addEventListener("DOMContentLoaded", () => {
     showApp();
   }
 
-  // OTP input keyboard navigation
-  document.querySelectorAll(".otp-inputs input").forEach((inp, idx, all) => {
+  // OTP input keyboard & paste navigation
+  const otpInputs = document.querySelectorAll(".otp-inputs input");
+  otpInputs.forEach((inp, idx, all) => {
     inp.addEventListener("input", () => {
+      inp.value = inp.value.replace(/\D/g, "");
       if (inp.value.length >= 1 && idx < all.length - 1) all[idx + 1].focus();
     });
     inp.addEventListener("keydown", (e) => {
       if (e.key === "Backspace" && !inp.value && idx > 0) all[idx - 1].focus();
     });
+    inp.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData)?.getData("text") || "";
+      const digits = text.replace(/\D/g, "").slice(0, 6);
+      if (digits) {
+        [...digits].forEach((d, i) => {
+          if (all[i]) all[i].value = d;
+        });
+        const targetFocus = Math.min(digits.length, all.length - 1);
+        if (all[targetFocus]) all[targetFocus].focus();
+      }
+    });
+  });
+
+  // Modal backdrop click to close
+  ['logout-modal', 'doc-view-modal', 'doc-facts-modal', 'doc-delete-modal', 'account-details-modal'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('click', (e) => {
+        if (e.target === el) {
+          el.style.display = 'none';
+        }
+      });
+    }
+  });
+
+  // Global escape key to close any active modal
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      ['logout-modal', 'doc-view-modal', 'doc-facts-modal', 'doc-delete-modal', 'account-details-modal'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && el.style.display !== 'none') {
+          el.style.display = 'none';
+        }
+      });
+    }
   });
 
   // Setup upload zone

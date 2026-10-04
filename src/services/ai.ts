@@ -1,7 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
 
-const PLATFORM_DEFAULT_KEY = 'AIzaSyB-0bigh7NRSzgr-GNOWrMLvFd5U1Fw4Ms';
-
 export function getEffectiveGeminiApiKey(): string | null {
   const envKey = process.env.GEMINI_API_KEY;
   if (
@@ -13,7 +11,7 @@ export function getEffectiveGeminiApiKey(): string | null {
   ) {
     return envKey;
   }
-  return PLATFORM_DEFAULT_KEY;
+  return null;
 }
 
 function getGeminiClient(): GoogleGenAI | null {
@@ -353,6 +351,23 @@ export function ruleExtract(rawText: string) {
 
   const bloodGroup = find([/(?:blood group|blood type)[\s:]+([ABO]+[+-]?(?:\s?positive|\s?negative)?)/i]);
 
+  // ABHA Health ID (if provided in reports)
+  const rawAbha = find([
+    /(?:abha(?:\s*(?:health)?\s*(?:id|number|no\.?|#))?|health\s*id)[\s:]+([0-9]{2}-[0-9]{4}-[0-9]{4}-[0-9]{4})/i,
+    /(?:abha(?:\s*(?:health)?\s*(?:id|number|no\.?|#))?|health\s*id)[\s:]+([0-9]{14})/i,
+    /(?:abha(?:\s*(?:health)?\s*(?:id|number|no\.?|#))?|health\s*id)[\s:]+([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+)/i,
+    /\b(\d{2}-\d{4}-\d{4}-\d{4})\b/,
+  ]);
+  let cleanAbha: string | null = null;
+  if (rawAbha) {
+    const rawDigits = rawAbha.replace(/\D/g, '');
+    if (rawDigits.length === 14) {
+      cleanAbha = `${rawDigits.slice(0, 2)}-${rawDigits.slice(2, 6)}-${rawDigits.slice(6, 10)}-${rawDigits.slice(10, 14)}`;
+    } else {
+      cleanAbha = rawAbha.trim();
+    }
+  }
+
   // Report Date
   const reportDate = find([
     /(?:order date|reported on|report date|date of report|test date|sample date)[\s:]+(\d{1,2}[-/][A-Za-z]{3,}[-/]\d{2,4}|\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\w+ \d{1,2},? \d{4})/i,
@@ -553,6 +568,7 @@ export function ruleExtract(rawText: string) {
       date_of_birth: dob,
       gender,
       blood_group: bloodGroup,
+      abha_id: cleanAbha,
       address: null,
     },
     report_date: reportDate,
@@ -601,6 +617,7 @@ Return ONLY valid JSON matching this schema:
     "date_of_birth": null,
     "gender": "Male",
     "blood_group": null,
+    "abha_id": null,
     "address": null
   },
   "report_date": "2026-09-24",
@@ -638,6 +655,7 @@ ${rawText.slice(0, 9000)}`;
         if (!parsed.patient.date_of_birth || parsed.patient.date_of_birth === 'null') {
           parsed.patient.date_of_birth = fallback.patient.date_of_birth || extractDob('', parsed.patient.age);
         }
+        parsed.patient.abha_id = parsed.patient.abha_id || fallback.patient.abha_id || null;
       } else {
         parsed.patient = fallback.patient;
       }

@@ -52,8 +52,15 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Static assets with caching for fast load times (Requirement 6)
-app.use(express.static(path.join(__dirname, 'frontend', 'static'), { maxAge: '1d' }));
+// Static assets (no-cache in dev/preview for immediate updates)
+app.use(
+  express.static(path.join(__dirname, 'frontend', 'static'), {
+    maxAge: 0,
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    },
+  })
+);
 
 // Auth helper middleware
 function requireAuth(req: any, res: any, next: any) {
@@ -78,12 +85,21 @@ function requireAuth(req: any, res: any, next: any) {
 app.post('/api/auth/login', (req, res) => {
   const email = (req.body?.email || '').trim().toLowerCase();
   const phone = (req.body?.phone || '').trim();
+  const fullName = (req.body?.full_name || req.body?.name || '').trim();
+  const dob = (req.body?.dob || req.body?.date_of_birth || '').trim();
+  const age = (req.body?.age || '').toString().trim();
+  const gender = (req.body?.gender || '').trim();
 
   if (!email || !phone) {
     return res.status(400).json({ error: 'Email and phone number are required.' });
   }
 
-  const user = store.findOrCreateUser(email, phone);
+  const user = store.findOrCreateUser(email, phone, {
+    full_name: fullName || undefined,
+    dob: dob || undefined,
+    age: age || undefined,
+    gender: gender || undefined,
+  });
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   store.createOtp(user.id, otp, 10);
 
@@ -91,6 +107,15 @@ app.post('/api/auth/login', (req, res) => {
     message: 'OTP generated (dev mode).',
     dev_otp: otp,
     user_id: user.id,
+    patient: {
+      id: user.id,
+      full_name: user.full_name,
+      email: user.email,
+      phone: user.phone,
+      dob,
+      age,
+      gender,
+    },
   });
 });
 
@@ -109,6 +134,7 @@ app.post('/api/auth/verify-otp', (req, res) => {
 
   const token = store.createSession(userId);
   const user = store.getUserById(userId);
+  const profile = store.getProfile(userId);
 
   return res.json({
     token,
@@ -116,7 +142,31 @@ app.post('/api/auth/verify-otp', (req, res) => {
       id: user?.id,
       email: user?.email,
       phone: user?.phone,
-      full_name: user?.full_name,
+      full_name: profile?.full_name || user?.full_name || null,
+      age: profile?.age || null,
+      date_of_birth: profile?.date_of_birth || null,
+      gender: profile?.gender || null,
+      abha_id: profile?.abha_id || null,
+      blood_group: profile?.blood_group || null,
+    },
+  });
+});
+
+app.get('/api/auth/me', requireAuth, (req: any, res: any) => {
+  const profile = store.getProfile(req.user.id);
+  const docs = store.listDocuments(req.user.id);
+  return res.json({
+    user: {
+      id: req.user.id,
+      email: req.user.email,
+      phone: req.user.phone,
+      full_name: profile?.full_name || req.user.full_name || null,
+      age: profile?.age || null,
+      date_of_birth: profile?.date_of_birth || null,
+      gender: profile?.gender || null,
+      abha_id: profile?.abha_id || null,
+      blood_group: profile?.blood_group || null,
+      documents_count: docs.length,
     },
   });
 });
@@ -145,6 +195,72 @@ app.get('/api/documents/:id/facts', requireAuth, (req: any, res: any) => {
   }
   const facts = store.getFactsForDocument(req.params.id);
   return res.json({ document: doc, facts });
+});
+
+// View original uploaded document file
+app.get(['/api/documents/:id/view', '/api/documents/:id/view/'], (req: any, res: any) => {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim() || ((req.query?.token as string) || '').trim();
+  const sessionData = store.getSession(token);
+  if (!sessionData) {
+    return res.status(401).send('Unauthorized. Please log in.');
+  }
+
+  const doc = store.getDocument(req.params.id);
+  if (!doc || doc.user_id !== sessionData.user.id) {
+    return res.status(404).send('Document not found or unauthorized.');
+  }
+
+  const filePath = path.join(uploadFolder, doc.filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send('File not found on server.');
+  }
+
+  const mimeTypes: Record<string, string> = {
+    pdf: 'application/pdf',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    bmp: 'image/bmp',
+    webp: 'image/webp',
+    txt: 'text/plain; charset=utf-8',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  };
+
+  const contentType = mimeTypes[doc.file_type] || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.original_filename)}"`);
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+
+  const fileStream = fs.createReadStream(filePath);
+  fileStream.pipe(res);
+});
+
+// Get document content and metadata for viewer
+app.get(['/api/documents/:id/content', '/api/documents/:id/content/'], requireAuth, async (req: any, res: any) => {
+  const doc = store.getDocument(req.params.id);
+  if (!doc || doc.user_id !== req.user.id) {
+    return res.status(404).json({ error: 'Document not found.' });
+  }
+
+  const filePath = path.join(uploadFolder, doc.filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found on disk.' });
+  }
+
+  let textContent = '';
+  try {
+    textContent = await extractText(filePath, doc.file_type);
+  } catch (err: any) {
+    textContent = 'Could not extract text: ' + (err.message || String(err));
+  }
+
+  return res.json({
+    document: doc,
+    text: textContent,
+    view_url: `/api/documents/${doc.id}/view`,
+  });
 });
 
 app.post('/api/documents/upload', requireAuth, upload.single('file') as any, async (req: any, res: any) => {
@@ -318,23 +434,24 @@ app.post('/api/documents/upload', requireAuth, upload.single('file') as any, asy
   }
 });
 
-app.delete('/api/documents/:id', requireAuth, (req: any, res: any) => {
-  const doc = store.getDocument(req.params.id);
+app.delete(['/api/documents/:id', '/api/documents/:id/'], requireAuth, (req: any, res: any) => {
+  const docId = req.params.id;
+  const doc = store.getDocument(docId);
   if (!doc || doc.user_id !== req.user.id) {
-    return res.status(404).json({ error: 'Document not found.' });
+    return res.status(404).json({ error: 'Document not found or unauthorized.' });
   }
 
   const filePath = path.join(uploadFolder, doc.filename);
   if (fs.existsSync(filePath)) {
     try {
       fs.unlinkSync(filePath);
-    } catch {
-      // ignore
+    } catch (e) {
+      console.warn('Failed unlinking file:', e);
     }
   }
 
-  store.deleteDocument(req.params.id, req.user.id);
-  return res.json({ message: 'Document deleted.' });
+  store.deleteDocument(docId, req.user.id);
+  return res.json({ success: true, message: 'Document and related extracted data deleted.', id: docId });
 });
 
 // ──────────────────────────────────────────────────────────────
